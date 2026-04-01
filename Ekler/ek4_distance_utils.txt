@@ -1,0 +1,44 @@
+import numpy as np
+from sklearn.neighbors import BallTree
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """
+    İki nokta arasındaki Haversine mesafesini (metre) hesaplar.
+    """
+    R = 6371000  # Dünya yarıçapı (metre)
+    phi1, phi2 = np.radians(lat1), np.radians(lat2)
+    dphi = np.radians(lat2 - lat1)
+    dlambda = np.radians(lon2 - lon1)
+    
+    a = np.sin(dphi / 2)**2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda / 2)**2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+    
+    return R * c
+
+def build_spatial_index(df):
+    """
+    BallTree kullanarak coğrafi indeks oluşturur (Haversine metriği ile).
+    """
+    # BallTree radians bekler: [lat, lon]
+    coords = np.radians(df[['latitude', 'longitude']].values)
+    # Metric 'haversine' seçildiğinde koordinatlar [lat, lon] olmalıdır.
+    tree = BallTree(coords, metric='haversine')
+    return tree
+
+def query_neighbors(tree, lat, lon, radius_meters):
+    """
+    Belirli bir yarıçap içindeki komşuları bulur.
+    """
+    R = 6371000
+    # Yarıçapı radyana çevir
+    radius_rad = radius_meters / R
+    
+    point_rad = np.radians([[lat, lon]])
+    indices = tree.query_radius(point_rad, r=radius_rad)
+    
+    return indices[0]
+
+if __name__ == "__main__":
+    # Test
+    d = haversine_distance(41.0369, 28.9850, 41.0422, 29.0060)
+    print(f"Taksim-Beşiktaş Mesafe: {d:.2f} metre")

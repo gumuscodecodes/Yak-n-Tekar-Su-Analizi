@@ -1,0 +1,49 @@
+import pandas as pd
+import numpy as np
+
+def calculate_risk_scores(repeats_df, crime_df, alpha=2.0, beta=1.0, model="decay"):
+    """
+    Tespit edilen yakın tekrar suçları üzerinden mesafe ve zaman sönümlenmesini kullanarak kümülatif risk skorlarını hesaplar.
+    """
+    if repeats_df.empty:
+        crime_df['risk_score'] = 0.0
+        crime_df['risk_level'] = 'Düşük'
+        return crime_df
+    
+    
+    repeats_df['pair_score'] = 1 / (
+        ((repeats_df['distance'] / 10.0 + 1)**alpha) * 
+        ((repeats_df['time_diff_hours'] + 1)**beta)
+    )
+    
+    
+    scores = repeats_df.groupby('origin_id')['pair_score'].sum().reset_index()
+    scores.columns = ['id', 'risk_score']
+    
+    crime_df['id'] = crime_df.index
+    
+    if 'risk_score' in crime_df.columns:
+        crime_df = crime_df.drop(columns=['risk_score', 'risk_level'])
+        
+    crime_df = crime_df.merge(scores, on='id', how='left').fillna(0)
+    
+    
+    max_score = crime_df['risk_score'].max()
+    if max_score > 0:
+        if model == "normalized":
+            if max_score < 1:
+                crime_df['risk_score'] = crime_df['risk_score'] * 10.0
+
+    
+    q80 = crime_df['risk_score'].quantile(0.80)
+    q50 = crime_df['risk_score'].quantile(0.50)
+    
+    def get_level(s):
+        if s > 0:
+            if s >= q80: return "Yüksek"
+            if s >= q50: return "Orta"
+        return "Düşük"
+    
+    crime_df['risk_level'] = crime_df['risk_score'].apply(get_level)
+    
+    return crime_df

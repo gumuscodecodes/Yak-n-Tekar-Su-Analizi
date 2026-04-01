@@ -1,0 +1,225 @@
+import folium
+from folium.plugins import HeatMap, MarkerCluster
+import pandas as pd
+import matplotlib.pyplot as plt
+from shapely.geometry import Point
+from shapely.ops import transform
+import pyproj
+import numpy as np
+
+def get_popup_html(row):
+    """
+    Haritadaki suç noktaları için özelleştirilmiş HTML popup içeriği oluşturur.
+    """
+    risk_level = row.get('risk_level', 'Düşük')
+    risk_score = row.get('risk_score', 0.0)
+    crime_type = row.get('crime_type', 'Bilinmiyor')
+    mahalle = row.get('mahalle', '-')
+    adres = row.get('adres', '-')
+    
+    # Risk renkleri
+    colors = {
+        'Yüksek': '#e74c3c',  # Kırmızı
+        'Orta': '#e67e22',   # Turuncu
+        'Düşük': '#2ecc71'    # Yeşil
+    }
+    color = colors.get(risk_level, '#34495e') # Varsayılan koyu mavi/gri
+    
+    html = f'''
+    <div style="
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        padding: 12px;
+        width: 240px;
+        border-radius: 10px;
+        background-color: #ffffff;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+        border-top: 6px solid {color};
+    ">
+        <h4 style="margin: 0 0 12px 0; color: #2c3e50; font-size: 16px; border-bottom: 1px solid #ecf0f1; padding-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
+            Olay Bilgisi
+            <span style="font-size: 18px;">📍</span>
+        </h4>
+        
+        <div style="margin-bottom: 10px;">
+            <span style="font-weight: bold; color: #95a5a6; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; display: block;">Suç Türü</span>
+            <span style="color: #2c3e50; font-size: 15px; font-weight: 600;">{crime_type}</span>
+        </div>
+        
+        <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: flex-start;">
+            <div style="flex: 1;">
+                <span style="font-weight: bold; color: #95a5a6; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; display: block;">Risk Seviyesi</span>
+                <span style="
+                    background-color: {color};
+                    color: white;
+                    padding: 3px 10px;
+                    border-radius: 20px;
+                    font-size: 11px;
+                    font-weight: bold;
+                    display: inline-block;
+                    margin-top: 4px;
+                    box-shadow: 0 2px 4px {color}44;
+                ">{risk_level}</span>
+            </div>
+            <div style="text-align: right; flex: 1;">
+                <span style="font-weight: bold; color: #95a5a6; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; display: block;">Risk Skoru</span>
+                <span style="color: #2c3e50; font-size: 16px; font-weight: 700;">{risk_score:.2f}</span>
+            </div>
+        </div>
+        
+        <div style="margin-bottom: 10px; background-color: #f8f9fa; padding: 8px; border-radius: 6px;">
+            <span style="font-weight: bold; color: #95a5a6; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; display: block;">Konum</span>
+            <span style="color: #34495e; font-size: 13px; font-weight: 500;">{mahalle}</span>
+        </div>
+        
+        <div style="margin-top: 5px;">
+            <span style="font-weight: bold; color: #95a5a6; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; display: block;">Tam Adres</span>
+            <span style="color: #7f8c8d; font-size: 12px; line-height: 1.4; display: block; margin-top: 2px;">{adres}</span>
+        </div>
+    </div>
+    '''
+    return html
+
+def create_crime_map(df, output_file="istanbul_crime_map.html"):
+    """
+    Folium kütüphanesini kullanarak interaktif bir suç ve risk haritası oluşturur.
+    """
+    m = folium.Map(location=[41.0082, 28.9784], zoom_start=11, tiles=None)
+    
+    folium.TileLayer('openstreetmap', name="OpenStreetMap").add_to(m)
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri',
+        name='Uydu Görüntüsü (Satellite)',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    folium.TileLayer('cartodbpositron', name="Sade Harita (Positron)").add_to(m)
+    
+    heat_data = [[row['latitude'], row['longitude']] for index, row in df.iterrows()]
+    HeatMap(heat_data, name="Suç Yoğunluğu (Heatmap)", radius=15).add_to(m)
+    
+    # 2. Risk Yoğunluğu Katmanı (Risk Skoruna Göre Isı Haritası)
+    risk_heat_data = [[row['latitude'], row['longitude'], row['risk_score']] for index, row in df.iterrows() if row['risk_score'] > 0]
+    if risk_heat_data:
+        HeatMap(risk_heat_data, name="Risk Yoğunluğu", radius=25, blur=15, min_opacity=0.3).add_to(m)
+    
+    buffer_distances = [100, 300, 500]
+    opacities = {100: 0.12, 300: 0.08, 500: 0.04}
+    
+    for dist in buffer_distances:
+        group = folium.FeatureGroup(name=f"{dist}m Risk Alanı", show=False)
+        opacity = opacities.get(dist, 0.05)
+        for idx, row in df.iterrows():
+            if row['risk_level'] == "Yüksek":
+                folium.Circle(
+                    location=[row['latitude'], row['longitude']],
+                    radius=dist,
+                    color="#c0392b",
+                    weight=1,
+                    fill=True,
+                    fill_opacity=opacity
+                ).add_to(group)
+        group.add_to(m)
+    
+    crime_types = df['crime_type'].unique()
+    colors = ["#e74c3c", "#3498db", "#2ecc71", "#9b59b6", "#f1c40f", "#e67e22"]
+    color_map = {ctype: colors[i % len(colors)] for i, ctype in enumerate(crime_types)}
+    
+    marker_cluster = MarkerCluster(name="Suç Grupları")
+    for idx, row in df.iterrows():
+        radius = 6 if row['risk_level'] == "Yüksek" else 3
+        opacity = 0.9 if row['risk_level'] in ["Yüksek", "Orta"] else 0.2
+        
+        mahalle = row.get('mahalle', '-')
+        adres = row.get('adres', '-')
+        
+        popup_content = get_popup_html(row)
+        popup = folium.Popup(popup_content, max_width=300)
+        
+        folium.CircleMarker(
+            location=[row['latitude'], row['longitude']],
+            radius=radius,
+            color=color_map.get(row['crime_type'], "black"),
+            fill=True,
+            fill_opacity=opacity,
+            popup=popup,
+            tooltip=f"{row['crime_type']} ({row['risk_level']})"
+        ).add_to(marker_cluster)
+    marker_cluster.add_to(m)
+    
+    folium.LayerControl(collapsed=False).add_to(m)
+    m.save(output_file)
+    print(f"Harita kaydedildi: {output_file}")
+
+def plot_temporal_analysis(df, output_file="temporal_analysis.png"):
+    """
+    Suç verilerinin saatlik, günlük ve aylık değişimlerini gösteren grafikler oluşturur.
+    """
+    day_tr = {
+        'Monday': 'Pazartesi', 'Tuesday': 'Salı', 'Wednesday': 'Çarşamba',
+        'Thursday': 'Perşembe', 'Friday': 'Cuma', 'Saturday': 'Cumartesi', 'Sunday': 'Pazar'
+    }
+    month_tr = {
+        1: 'Ocak', 2: 'Şubat', 3: 'Mart', 4: 'Nisan', 5: 'Mayıs', 6: 'Haziran',
+        7: 'Temmuz', 8: 'Ağustos', 9: 'Eylül', 10: 'Ekim', 11: 'Kasım', 12: 'Aralık'
+    }
+    
+    df['hour'] = df['datetime'].dt.hour
+    df['day'] = df['datetime'].dt.day_name().map(day_tr)
+    df['month_name'] = df['datetime'].dt.month.map(month_tr)
+    df['year'] = df['datetime'].dt.year
+    df['label_month'] = df['month_name'] + " " + df['year'].astype(str)
+    
+    df['period'] = df['datetime'].dt.to_period('M')
+    
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 18))
+    
+    hourly = df['hour'].value_counts().sort_index()
+    hourly.plot(kind='bar', ax=ax1, color='#34495e', alpha=0.8)
+    ax1.set_title('Saatlik Suç Dağılımı', fontsize=14)
+    ax1.set_xlabel('Saat')
+    ax1.set_ylabel('Olay Sayısı')
+    
+    # 2. Günlük Dağılım
+    order_days = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar']
+    daily = df['day'].value_counts().reindex(order_days)
+    daily.plot(kind='bar', ax=ax2, color='#e67e22', alpha=0.8)
+    ax2.set_title('Günlere Göre Suç Dağılımı (Haftalık)', fontsize=14)
+    ax2.set_xlabel('Gün')
+    ax2.set_ylabel('Olay Sayısı')
+    
+    monthly = df.groupby(['period', 'label_month']).size().reset_index(name='count')
+    monthly = monthly.sort_values('period')
+    
+    ax3.plot(monthly['label_month'], monthly['count'], marker='o', color='#27ae60', linewidth=2)
+    ax3.set_title('Aylara Göre Suç Trendi (2024-2026)', fontsize=14)
+    ax3.set_xlabel('Ay')
+    ax3.set_ylabel('Olay Sayısı')
+    plt.xticks(rotation=45)
+    
+    plt.tight_layout()
+    plt.savefig(output_file)
+    print(f"Grafik kaydedildi: {output_file}")
+
+def get_buffer_geometry(lat, lon, dist_m):
+    """
+    Belirli bir mesafe için coğrafi tampon bölge (buffer) geometrisi oluşturur.
+    """
+    p = Point(lon, lat)
+    # AEQD projeksiyonu yerel mesafe koruma için idealdir
+    proj_str = f"+proj=aeqd +lat_0={lat} +lon_0={lon} +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+    transformer = pyproj.Transformer.from_crs("EPSG:4326", proj_str, always_xy=True).transform
+    inv_transformer = pyproj.Transformer.from_crs(proj_str, "EPSG:4326", always_xy=True).transform
+    
+    p_proj = transform(transformer, p)
+    buffer_proj = p_proj.buffer(dist_m)
+    buffer_wgs = transform(inv_transformer, buffer_proj)
+    return buffer_wgs
+
+if __name__ == "__main__":
+    from data_generation import generate_crime_data
+    df = generate_crime_data(100)
+    df['risk_level'] = "Low"
+    df['risk_score'] = 0.0
+    create_crime_map(df)
+    plot_temporal_analysis(df)
